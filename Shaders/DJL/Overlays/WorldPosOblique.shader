@@ -1,6 +1,5 @@
 // A simple unity shader example/template that visualizes world position to demonstrate
 // correct depth sampling with oblique view frustums, target use case being mirrors in VRChat
-// Also includes a hacky way of determining if valid camera depth texture is available
 
 // Algorithm based on the one provided by Alexander V. Popov 
 // in "An Efficient Depth Linearization Method for Oblique View Frustums"
@@ -76,20 +75,9 @@ SubShader
 		{
 			float perspectiveDivide = 1.0f / i.vertex.w;
 			float4 direction = i.worldDirection * perspectiveDivide;
-            float2 screenpos = i.grabPos.xy * perspectiveDivide;
+			float2 screenpos = i.grabPos.xy * perspectiveDivide;
 
 			float z = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, screenpos);
-			
-			/* Check if camera depthmap available */
-			// My tests show that when no depth is available, unity passes some flat grey texture
-			// and _CameraDepthTexture_TexelSize does not indicate so - still contains screen dimesnsions
-			// Even though frame debugger shows such texture being around 0.5, the determined actual value is in 'hz' below.
-			// *Only tested with color space set to linear
-			const static float hz = 0.21582022;
-			const static float zeps = 0.000001;
-			bool depthgray = abs(z-hz) < zeps; // This condition is enough if little noise is acceptible
-			bool depthconstant = fwidth(z) == 0;
-			if (depthgray && depthconstant) return float4(0.25,0,0,0.25); // dark red
 
 		// Only tested on setup with reversed Z buffer
 		#if UNITY_REVERSED_Z
