@@ -3,8 +3,8 @@ Collection of Unity shaders, scripts and prefabs oriented for usage in VRChat or
 
 ### Available things/assets and their descriptions can be found in sub-categories:
 
-* ## [Editor scripts](scripts/Editor/README.md)
-* ## [Shaders](shaders/DJL/README.md)
+* ## [Editor scripts](Scripts/Editor)
+* ## [Shaders](Shaders/DJL)
 
 ### Licensing 
 Most of the stuff here, unless otherwise stated in the source files, is released under "The Unlicense", see UNLICENSE file for details.
