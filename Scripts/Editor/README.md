@@ -14,6 +14,8 @@ Skips materials with missing/invalid shaders so hopefully should not damage asse
 With some material shown in inspector, right-click its header to select and highlight material object in project window, just like Unity allows to select the shader
 
 ## Mesh asset saver
-
 Right click `Mesh Filter` or `Skinned Mesh Renderer` component to save its mesh as an asset. Useful for saving runtime(script)-generated meshes.  
 One of the options allows to **overwrite the mesh bounds** with the ones specified in `Skinned Mesh Renderer` component.
+
+## Mesh bounds inspector
+Makes `Mesh Filter` components show bounding box like `Skinned Mesh Renderer`s do
