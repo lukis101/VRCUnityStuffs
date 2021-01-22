@@ -1,8 +1,8 @@
 ﻿
 // Custom Alpha-to-coverage by Dj Lukis.LT (Unlicense)
 
-// Dithering code logic yoinked from Poiyomi Toon shader (MIT)
-// at https://github.com/poiyomi/PoiyomiToonShader
+// Dithering code logic yoinked from Amplify and XSToon (MIT)
+// https://github.com/Xiexe/Xiexes-Unity-Shaders
 
 // Edit fragment shader to use texture alpha instead of UV.x
 
@@ -13,7 +13,8 @@ Shader "DJL/A2C-Custom"
         _MainTex ("Texture", 2D) = "white" {}
         _Alpha("Alpha Value", Range(0, 1)) = 1
         _DitherGradient("Dither Strength", Range(0, 1)) = 1
-        [Toggle(_)]_Gamma("Gamma Adjust", Float) = 0
+        [ToggleUI]_Gamma("Gamma Adjust", Float) = 0
+        [Toggle(_NATIVE_A2C)]_AlphaToMask("Native A2C", Float) = 0
     }
     SubShader
     {
@@ -21,16 +22,17 @@ Shader "DJL/A2C-Custom"
 
         Cull Off
         //Blend Off
-        AlphaToMask On
-        LOD 100
+        AlphaToMask [_AlphaToMask]
+        //LOD 100
 
         Pass
         {
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
-            // 4.5+ Required for direct reading sample count
-            #pragma target 4.5
+            // 4.5+ Required for GetRenderTargetSampleCount()
+            #pragma target 5.0
+            #pragma shader_feature _NATIVE_A2C
 
             #include "UnityCG.cginc"
 
@@ -63,7 +65,7 @@ Shader "DJL/A2C-Custom"
                 return o;
             }
 
-            /// Code from Poi Toon:
+            /// Dither matrix from "Amplify Shader Editor"
             inline half Dither8x8Bayer(int x, int y)
             {
                 const half dither[64] = {
@@ -77,8 +79,9 @@ Shader "DJL/A2C-Custom"
                     43, 27, 39, 23, 42, 26, 38, 22
                 };
                 int r = y * 8 + x;
-                return dither[r] / 64;
+                return dither[r] / 65; // Use 65 instead of 64 to get better centering
             }
+			// https://github.com/Xiexe/Xiexes-Unity-Shaders/blob/2bade4beb87e96d73811ac2509588f27ae2e989f/Main/CGIncludes/XSHelperFunctions.cginc#L120
             half2 calcScreenUVs(float4 screenPos)
             {
                 half2 uv = screenPos / (screenPos.w + 0.0000000001);
@@ -90,16 +93,20 @@ Shader "DJL/A2C-Custom"
     
                 return uv;
             }
+            
             half applyDithering(half alpha, float4 screenPos, half spacing)
             {
                 half2 screenuv = calcScreenUVs(screenPos).xy;
                 half dither = Dither8x8Bayer(fmod(screenuv.x, 8), fmod(screenuv.y, 8));
-                // Edited to be aware of sample count:
-                return alpha - dither/ spacing + 1.0/(spacing *2);
+                return alpha + (0.5 - dither)/spacing;
             }
-            /// --------------- ///
 
-            half4 frag(v2f i, out uint cov : SV_Coverage) : SV_Target
+
+            half4 frag(v2f i
+#ifndef _NATIVE_A2C	
+			, out uint cov : SV_Coverage
+#endif
+			) : SV_Target
             {
                 half a = _Alpha;
 
@@ -117,13 +124,18 @@ Shader "DJL/A2C-Custom"
                 uint samplecount = GetRenderTargetSampleCount();
 
                 a = applyDithering(a, i.screenPos, samplecount / _DitherGradient);
+				
+#ifndef _NATIVE_A2C	
+                // center out the steps
+                a = a * samplecount + 0.5;
 
-                // Center out the steps
-                a += 0.5/samplecount;
                 // Shift and subtract to get the needed amount of positive bits
-                cov = (1u << (uint)(a * samplecount)) - 1;
+                cov = (1u << (uint)(a)) - 1u;
 
-                return half4(1,1,1, 1);
+                // Output 1 as alpha, otherwise result would be a^2
+				a = 1;
+#endif
+                return half4(1,1,1, a);
             }
             ENDCG
         }
