@@ -1,5 +1,13 @@
 # Editor tools
 
+## Animator Extensions
+Some [Harmony](https://github.com/pardeike/Harmony) -based patches to Unitys Animator window:  
+* Prevent annoying layer list scroll position reset on any edit action
+* Layer copy-pasting and duplication (including cross-controller) via context menu or keyboard shortcuts
+* F2 keyboard shortcut to rename selected layer
+
+![Animator Extensions context menu](.img/AnimatorExtensions_Context.png)
+
 ## Material Cleaner
 Full window to display material keywords, property stats and and allow quick cleanup of unused ones.  
 Also has single click way to cleanup multiple materials via Toolbar->`Tools/DJL/Cleanup Material properties`.  
