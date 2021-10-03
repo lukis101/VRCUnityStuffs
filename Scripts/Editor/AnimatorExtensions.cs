@@ -2,6 +2,8 @@
 // Copyright (c) 2021 Dj Lukis.LT
 // MIT license (see LICENSE in https://github.com/lukis101/VRCUnityStuffs)
 
+// Known issue: Unsupported.PasteToStateMachineFromPasteboard copies some parameters, but does not copy their default values
+
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
@@ -36,7 +38,7 @@ namespace DJL
 			MethodInfo ondrawlayer_target = AccessTools.Method(LayerControllerViewType, "OnDrawLayer");
 			MethodInfo ondrawlayer_prefix = AccessTools.Method(typeof(AnimatorExtensions), "OnDrawLayer_Prefix");
 			harmonyInstance.Patch(ondrawlayer_target, prefix: new HarmonyMethod(ondrawlayer_prefix));
-			// Add same via keyboard hooks
+			// And same via keyboard hooks
 			MethodInfo keyboardhandling_target = AccessTools.Method(LayerControllerViewType, "KeyboardHandling");
 			MethodInfo keyboardhandling_prefix = AccessTools.Method(typeof(AnimatorExtensions), "KeyboardHandling_Prefix");
 			harmonyInstance.Patch(ondrawlayer_target, prefix:new HarmonyMethod(keyboardhandling_prefix));
@@ -93,6 +95,7 @@ namespace DJL
 			_controllerClipboard = ctrl;
 			Unsupported.CopyStateMachineDataToPasteboard(_layerClipboard.stateMachine, ctrl, rlist.index);
 		}
+
 		public static void PasteLayer(object layerControllerView)
 		{
 			if (_layerClipboard == null)
@@ -129,32 +132,29 @@ namespace DJL
 			if (ctrl != _controllerClipboard)
 			{
 				// cache names
-				List<string> paramnames = new List<string>(ctrl.parameters.Length);
+				// TODO: do this before pasting to workaround default values not being copied
+				var destparams = new Dictionary<string, AnimatorControllerParameter>(ctrl.parameters.Length);
 				foreach (var param in ctrl.parameters)
-					paramnames.Add(param.name);
+					destparams[param.name] = param;
 				
-				// build full list of transitions
-				List<AnimatorStateTransition> transitions = new List<AnimatorStateTransition>(pastedsm.anyStateTransitions.Length);
-				transitions.AddRange(pastedsm.anyStateTransitions);
-				foreach (var state in pastedsm.states)
-					transitions.AddRange(state.state.transitions);
-				// TODO: recursively loop over sub state machines
+				var srcparams = new Dictionary<string, AnimatorControllerParameter>(_controllerClipboard.parameters.Length);
+				foreach (var param in _controllerClipboard.parameters)
+					srcparams[param.name] = param;
+				
+				var queuedparams = new Dictionary<string, AnimatorControllerParameter>(_controllerClipboard.parameters.Length);
+				
+				// Recursively loop over all nested state machines
+				GatherSmParams(pastedsm, ref srcparams, ref queuedparams);
 
-				// sync up whats missing
-				foreach (var transition in transitions)
+				// Sync up whats missing
+				foreach (var param in queuedparams.Values)
 				{
-					foreach (var cond in transition.conditions)
+					string pname = param.name;
+					if (!destparams.ContainsKey(pname))
 					{
-						if (paramnames.IndexOf(cond.parameter) < 0)
-						{
-							Debug.Log("Transfering parameter "+cond.parameter);
-							paramnames.Add(cond.parameter);
-							foreach (var param in _controllerClipboard.parameters)
-							{
-								if (param.name.Equals(cond.parameter))
-									ctrl.AddParameter(param);
-							}
-						}
+						Debug.Log("Transferring parameter "+pname); // TODO: count or concatenate names?
+						ctrl.AddParameter(param);
+						// note: queuedparams should not have duplicates so don't need to append to destparams
 					}
 				}
 			}
@@ -163,6 +163,7 @@ namespace DJL
 			AssetDatabase.SaveAssets();
 			AssetDatabase.Refresh();
 		}
+		
 		public static void PasteLayerSettings(object layerControllerView)
 		{
 			var rlist = Traverse.Create(layerControllerView).Field("m_LayerList").GetValue<ReorderableList>();
@@ -229,6 +230,64 @@ namespace DJL
 					}
 				}
 			}
+		}
+		
+		// Recursive helper functions to gather deeply-nested parameter references
+		private static void GatherBtParams(BlendTree bt,
+			ref Dictionary<string, AnimatorControllerParameter> srcparams,
+			ref Dictionary<string, AnimatorControllerParameter> queuedparams)
+		{
+			if (srcparams.ContainsKey(bt.blendParameter))
+				queuedparams[bt.blendParameter] = srcparams[bt.blendParameter];
+			if (srcparams.ContainsKey(bt.blendParameterY))
+				queuedparams[bt.blendParameterY] = srcparams[bt.blendParameterY];
+			
+			foreach (var cmotion in bt.children)
+			{
+				if (srcparams.ContainsKey(cmotion.directBlendParameter))
+					queuedparams[cmotion.directBlendParameter] = srcparams[cmotion.directBlendParameter];
+				
+				// Go deeper to nested BlendTrees
+				var cbt = cmotion.motion as BlendTree;
+				if (!(cbt is null))
+					GatherBtParams(cbt, ref srcparams, ref queuedparams);
+			}
+		}
+		private static void GatherSmParams(AnimatorStateMachine sm,
+			ref Dictionary<string, AnimatorControllerParameter> srcparams,
+			ref Dictionary<string, AnimatorControllerParameter> queuedparams)
+		{
+			// Go over states to check controlling or BlendTree params
+			foreach (var cstate in sm.states)
+			{
+				var s = cstate.state;
+				if (s.mirrorParameterActive && srcparams.ContainsKey(s.mirrorParameter))
+					queuedparams[s.mirrorParameter] = srcparams[s.mirrorParameter];
+				if (s.speedParameterActive && srcparams.ContainsKey(s.speedParameter))
+					queuedparams[s.speedParameter] = srcparams[s.speedParameter];
+				if (s.timeParameterActive && srcparams.ContainsKey(s.timeParameter))
+					queuedparams[s.timeParameter] = srcparams[s.timeParameter];
+				if (s.cycleOffsetParameterActive && srcparams.ContainsKey(s.cycleOffsetParameter))
+					queuedparams[s.cycleOffsetParameter] = srcparams[s.cycleOffsetParameter];
+
+				var bt = s.motion as BlendTree;
+				if (!(bt is null))
+					GatherBtParams(bt, ref srcparams, ref queuedparams);
+			}
+
+			// Go over all transitions
+			var transitions = new List<AnimatorStateTransition>(sm.anyStateTransitions.Length);
+			transitions.AddRange(sm.anyStateTransitions);
+			foreach (var cstate in sm.states)
+				transitions.AddRange(cstate.state.transitions);
+			foreach (var transition in transitions)
+			foreach (var cond in transition.conditions)
+				if (srcparams.ContainsKey(cond.parameter))
+					queuedparams[cond.parameter] = srcparams[cond.parameter];
+			
+			// Go deeper to child sate machines
+			foreach (var csm in sm.stateMachines)
+				GatherSmParams(csm.stateMachine, ref srcparams, ref queuedparams);
 		}
 	}
 }
