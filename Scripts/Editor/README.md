@@ -2,9 +2,9 @@
 
 ## Animator Extensions
 Some [Harmony](https://github.com/pardeike/Harmony) -based patches to Unitys Animator window:  
-* Prevent annoying layer list scroll position reset on any edit action
 * Layer copy-pasting and duplication (including cross-controller) via context menu or keyboard shortcuts
 * F2 keyboard shortcut to rename selected layer
+* Instead of the annoying list scrollbar reset, get new or edited layer in view
 
 ![Animator Extensions context menu](.img/AnimatorExtensions_Context.png)
 

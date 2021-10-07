@@ -19,10 +19,15 @@ namespace DJL
 	[InitializeOnLoad]
 	class AnimatorExtensions
 	{
-		private static readonly Type AnimatorWindowType = AccessTools.TypeByName("UnityEditor.Graphs.AnimatorControllerTool");
+		//private static readonly Type AnimatorWindowType = AccessTools.TypeByName("UnityEditor.Graphs.AnimatorControllerTool");
 		private static readonly Type LayerControllerViewType = AccessTools.TypeByName("UnityEditor.Graphs.LayerControllerView");
 		private static readonly Type RenameOverlayType = AccessTools.TypeByName("UnityEditor.RenameOverlay");
 		private static readonly MethodInfo BeginRenameMethod = AccessTools.Method(RenameOverlayType, "BeginRename");
+		private static readonly MethodInfo GetElementHeightMethod = AccessTools.Method(typeof(ReorderableList), "GetElementHeight", new Type[]{typeof(int)});
+		private static readonly MethodInfo GetElementYOffsetMethod = AccessTools.Method(typeof(ReorderableList), "GetElementYOffset", new Type[]{typeof(int)});
+		private static readonly FieldInfo LayerScrollField = AccessTools.Field(LayerControllerViewType, "m_LayerScroll");
+		private static readonly FieldInfo LayerListField = AccessTools.Field(LayerControllerViewType, "m_LayerList");
+		private static bool _refocusSelectedLayer = false;
 
 		static AnimatorExtensions()
 		{
@@ -39,24 +44,25 @@ namespace DJL
 			MethodInfo ondrawlayer_prefix = AccessTools.Method(typeof(AnimatorExtensions), "OnDrawLayer_Prefix");
 			harmonyInstance.Patch(ondrawlayer_target, prefix: new HarmonyMethod(ondrawlayer_prefix));
 			// And same via keyboard hooks
-			MethodInfo keyboardhandling_target = AccessTools.Method(LayerControllerViewType, "KeyboardHandling");
-			MethodInfo keyboardhandling_prefix = AccessTools.Method(typeof(AnimatorExtensions), "KeyboardHandling_Prefix");
-			harmonyInstance.Patch(ondrawlayer_target, prefix:new HarmonyMethod(keyboardhandling_prefix));
+			MethodInfo layercontrollerongui_target = AccessTools.Method(LayerControllerViewType, "OnGUI");
+			MethodInfo layercontrollerongui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "LayerController_OnGUI_Prefix");
+			harmonyInstance.Patch(layercontrollerongui_target, prefix:new HarmonyMethod(layercontrollerongui_prefix));
 		}
 
 		// Prevent scroll position reset when rearranging or editing layers
 		private static Vector2 _layerScrollCache;
 		public static void ResetUI_Prefix(object __instance)
 		{
-			_layerScrollCache = Traverse.Create(__instance).Field("m_LayerScroll").GetValue<Vector2>();
+			_layerScrollCache = (Vector2)LayerScrollField.GetValue(__instance);
 		}
 		public static void ResetUI_Postfix(object __instance)
 		{
-			var field = Traverse.Create(__instance).Field("m_LayerScroll");
-			if (field.GetValue<Vector2>().y == 0)
-				field.SetValue(_layerScrollCache);
+			Vector2 scrollpos = (Vector2)LayerScrollField.GetValue(__instance);
+			if (scrollpos.y == 0)
+				LayerScrollField.SetValue(__instance, _layerScrollCache);
+			_refocusSelectedLayer = true; // Defer focusing to OnGUI to get latest list size and window rect
 		}
-		
+
 		// Layer copy-pasting
 		private static AnimatorControllerLayer _layerClipboard = null;
 		private static AnimatorController _controllerClipboard = null;
@@ -89,7 +95,7 @@ namespace DJL
 		}
 		private static void CopyLayer(object layerControllerView)
 		{
-			var rlist = Traverse.Create(layerControllerView).Field("m_LayerList").GetValue<ReorderableList>();
+			var rlist = (ReorderableList)LayerListField.GetValue(layerControllerView);
 			var ctrl = Traverse.Create(layerControllerView).Field("m_Host").Property("animatorController").GetValue<AnimatorController>();
 			_layerClipboard = rlist.list[rlist.index] as AnimatorControllerLayer;
 			_controllerClipboard = ctrl;
@@ -100,7 +106,7 @@ namespace DJL
 		{
 			if (_layerClipboard == null)
 				return;
-			var rlist = Traverse.Create(layerControllerView).Field("m_LayerList").GetValue<ReorderableList>();
+			var rlist = (ReorderableList)LayerListField.GetValue(layerControllerView);
 			var ctrl = Traverse.Create(layerControllerView).Field("m_Host").Property("animatorController").GetValue<AnimatorController>();
 
 			// Will paste layer right below selected one
@@ -127,7 +133,7 @@ namespace DJL
 				layers[i] = layers[i - 1];
 			layers[targetindex] = pastedlayer;
 			ctrl.layers = layers;
-			
+
 			// Pasting to different controller, sync parameters
 			if (ctrl != _controllerClipboard)
 			{
@@ -162,11 +168,14 @@ namespace DJL
 			EditorUtility.SetDirty(ctrl);
 			AssetDatabase.SaveAssets();
 			AssetDatabase.Refresh();
+			
+			// Update list selection
+			Traverse.Create(layerControllerView).Property("selectedLayerIndex").SetValue(targetindex);
 		}
 		
 		public static void PasteLayerSettings(object layerControllerView)
 		{
-			var rlist = Traverse.Create(layerControllerView).Field("m_LayerList").GetValue<ReorderableList>();
+			var rlist = (ReorderableList)LayerListField.GetValue(layerControllerView);
 			AnimatorController ctrl = Traverse.Create(layerControllerView).Field("m_Host").Property("animatorController").GetValue<AnimatorController>();
 
 			Debug.LogWarning("Copy! "+ctrl.name);
@@ -187,9 +196,9 @@ namespace DJL
 		}
 		
 		// Keyboard hooks for layer editing
-		public static void KeyboardHandling_Prefix(object __instance)
+		public static void LayerController_OnGUI_Prefix(object __instance, Rect rect)
 		{
-			var rlist = Traverse.Create(__instance).Field("m_LayerList").GetValue<ReorderableList>();
+			var rlist = (ReorderableList)LayerListField.GetValue(__instance);
 			if (rlist.HasKeyboardControl())
 			{
 				Event current = Event.current;
@@ -221,6 +230,7 @@ namespace DJL
 						if (keyCode == KeyCode.F2) // Rename
 						{
 							current.Use();
+							_refocusSelectedLayer = true;
 							AnimatorControllerLayer layer = rlist.list[rlist.index] as AnimatorControllerLayer;
 							var rovl = Traverse.Create(__instance).Property("renameOverlay").GetValue();
 							BeginRenameMethod.Invoke(rovl, new object[] {layer.name, rlist.index, 0.1f});
@@ -229,6 +239,19 @@ namespace DJL
 						break;
 					}
 				}
+			}
+
+			// Adjust scroll to get selected layer visible
+			if (_refocusSelectedLayer)
+			{
+				_refocusSelectedLayer = false;
+				Vector2 curscroll = (Vector2)LayerScrollField.GetValue(__instance);
+				float height = (float)GetElementHeightMethod.Invoke(rlist, new object[] {rlist.index}) + 20;
+				float offs = (float)GetElementYOffsetMethod.Invoke(rlist, new object[] {rlist.index});
+				if (offs < curscroll.y)
+					LayerScrollField.SetValue(__instance, new Vector2(curscroll.x,offs));
+				else if (offs+height > curscroll.y+rect.height)
+					LayerScrollField.SetValue(__instance, new Vector2(curscroll.x,offs+height-rect.height));
 			}
 		}
 		
