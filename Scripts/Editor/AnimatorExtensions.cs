@@ -3,6 +3,8 @@
 // MIT license (see LICENSE in https://github.com/lukis101/VRCUnityStuffs)
 
 // Known issue: Unsupported.PasteToStateMachineFromPasteboard copies some parameters, but does not copy their default values
+// It also does not have proper undo handling causing dangling sub-assets left in the controller
+// TODO: add undo callback handler to delete sub-state machines properly
 
 #if UNITY_EDITOR
 using System;
@@ -47,6 +49,11 @@ namespace DJL
 			MethodInfo layercontrollerongui_target = AccessTools.Method(LayerControllerViewType, "OnGUI");
 			MethodInfo layercontrollerongui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "LayerController_OnGUI_Prefix");
 			harmonyInstance.Patch(layercontrollerongui_target, prefix:new HarmonyMethod(layercontrollerongui_prefix));
+			
+			// Purposely break 'undo' of sub-state machine pasting as that leaves dead sub-assets inside the controller
+			MethodInfo pastetostatemachine_target = typeof(Unsupported).GetMethod("PasteToStateMachineFromPasteboard", BindingFlags.Static | BindingFlags.Public);//AccessTools.Method(typeof(Unsupported), "PasteToStateMachineFromPasteboard");
+			MethodInfo pastetostatemachine_postfix =  AccessTools.Method(typeof(AnimatorExtensions), "PasteToStateMachineFromPasteboard_Postfix");
+			harmonyInstance.Patch(pastetostatemachine_target, postfix:new HarmonyMethod(pastetostatemachine_postfix));
 		}
 
 		// Prevent scroll position reset when rearranging or editing layers
@@ -61,6 +68,17 @@ namespace DJL
 			if (scrollpos.y == 0)
 				LayerScrollField.SetValue(__instance, _layerScrollCache);
 			_refocusSelectedLayer = true; // Defer focusing to OnGUI to get latest list size and window rect
+		}
+		
+		// Break 'undo' of sub-state machine pasting
+		public static void PasteToStateMachineFromPasteboard_Postfix(
+			AnimatorStateMachine sm,
+			AnimatorController controller,
+			int layerIndex,
+			Vector3 position)
+		{
+			Debug.Log("Yeeet: "+Undo.GetCurrentGroupName());
+			Undo.ClearUndo(sm);
 		}
 
 		// Layer copy-pasting
@@ -112,7 +130,8 @@ namespace DJL
 			// Will paste layer right below selected one
 			int targetindex = rlist.index + 1;
 			string newname = ctrl.MakeUniqueLayerName(_layerClipboard.name);
-
+			Undo.FlushUndoRecordObjects();
+			
 			// Use unity built-in function to clone state machine
 			ctrl.AddLayer(newname);
 			var layers = ctrl.layers;
@@ -134,9 +153,16 @@ namespace DJL
 			layers[targetindex] = pastedlayer;
 			ctrl.layers = layers;
 
+			 // Make layer unaffected by undo, forces user to delete manually but prevents dangling sub-assets
+			Undo.ClearUndo(ctrl);
+
 			// Pasting to different controller, sync parameters
 			if (ctrl != _controllerClipboard)
 			{
+				Undo.IncrementCurrentGroup();
+				int curgroup = Undo.GetCurrentGroup();
+				Undo.RecordObject(ctrl, "Sync pasted layer parameters");
+
 				// cache names
 				// TODO: do this before pasting to workaround default values not being copied
 				var destparams = new Dictionary<string, AnimatorControllerParameter>(ctrl.parameters.Length);
@@ -163,6 +189,7 @@ namespace DJL
 						// note: queuedparams should not have duplicates so don't need to append to destparams
 					}
 				}
+				Undo.CollapseUndoOperations(curgroup);
 			}
 			
 			EditorUtility.SetDirty(ctrl);
