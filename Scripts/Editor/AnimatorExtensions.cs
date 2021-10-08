@@ -23,6 +23,7 @@ namespace DJL
 	{
 		//private static readonly Type AnimatorWindowType = AccessTools.TypeByName("UnityEditor.Graphs.AnimatorControllerTool");
 		private static readonly Type LayerControllerViewType = AccessTools.TypeByName("UnityEditor.Graphs.LayerControllerView");
+		private static readonly Type ParameterControllerViewType = AccessTools.TypeByName("UnityEditor.Graphs.ParameterControllerView");
 		private static readonly Type RenameOverlayType = AccessTools.TypeByName("UnityEditor.RenameOverlay");
 		private static readonly MethodInfo BeginRenameMethod = AccessTools.Method(RenameOverlayType, "BeginRename");
 		private static readonly MethodInfo GetElementHeightMethod = AccessTools.Method(typeof(ReorderableList), "GetElementHeight", new Type[]{typeof(int)});
@@ -40,6 +41,11 @@ namespace DJL
 			MethodInfo resetui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "ResetUI_Prefix");
 			MethodInfo resetui_postfix = AccessTools.Method(typeof(AnimatorExtensions), "ResetUI_Postfix");
 			harmonyInstance.Patch(resetui_target, prefix:new HarmonyMethod(resetui_prefix), postfix:new HarmonyMethod(resetui_postfix));
+			
+			// Scroll to parameter list bottom when adding a new one to see the rename field
+			MethodInfo addparametermenu_target = AccessTools.Method(ParameterControllerViewType, "AddParameterMenu");
+			MethodInfo addparametermenu_postfix = AccessTools.Method(typeof(AnimatorExtensions), "AddParameterMenu_Postfix");
+			harmonyInstance.Patch(addparametermenu_target, postfix:new HarmonyMethod(addparametermenu_postfix));
 			
 			// Add extra options for layer list context menu
 			MethodInfo ondrawlayer_target = AccessTools.Method(LayerControllerViewType, "OnDrawLayer");
@@ -68,6 +74,12 @@ namespace DJL
 			if (scrollpos.y == 0)
 				LayerScrollField.SetValue(__instance, _layerScrollCache);
 			_refocusSelectedLayer = true; // Defer focusing to OnGUI to get latest list size and window rect
+		}
+		
+		// Set scroll to far down when adding new parameter, gets clamped so good enough
+		public static void AddParameterMenu_Postfix(object __instance, object value)
+		{
+			Traverse.Create(__instance).Field("m_ScrollPosition").SetValue(new Vector2(0, 9001));
 		}
 		
 		// Break 'undo' of sub-state machine pasting
