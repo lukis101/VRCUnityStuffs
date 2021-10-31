@@ -21,7 +21,8 @@ namespace DJL
 	[InitializeOnLoad]
 	class AnimatorExtensions
 	{
-		//private static readonly Type AnimatorWindowType = AccessTools.TypeByName("UnityEditor.Graphs.AnimatorControllerTool");
+		private static readonly Type AnimatorWindowType = AccessTools.TypeByName("UnityEditor.Graphs.AnimatorControllerTool");
+		private static readonly MethodInfo AnimatorControllerGetter = AccessTools.PropertyGetter(AnimatorWindowType, "animatorController");
 		private static readonly Type LayerControllerViewType = AccessTools.TypeByName("UnityEditor.Graphs.LayerControllerView");
 		private static readonly Type ParameterControllerViewType = AccessTools.TypeByName("UnityEditor.Graphs.ParameterControllerView");
 		private static readonly Type RenameOverlayType = AccessTools.TypeByName("UnityEditor.RenameOverlay");
@@ -55,6 +56,11 @@ namespace DJL
 			MethodInfo layercontrollerongui_target = AccessTools.Method(LayerControllerViewType, "OnGUI");
 			MethodInfo layercontrollerongui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "LayerController_OnGUI_Prefix");
 			harmonyInstance.Patch(layercontrollerongui_target, prefix:new HarmonyMethod(layercontrollerongui_prefix));
+			
+			// Click bottom bar to ping the actual controller asset
+			MethodInfo dographbottombar_target = AccessTools.Method(AnimatorWindowType, "DoGraphBottomBar");
+			MethodInfo dographbottombar_postfix = AccessTools.Method(typeof(AnimatorExtensions), "DoGraphBottomBar_postfix");
+			harmonyInstance.Patch(dographbottombar_target, postfix:new HarmonyMethod(dographbottombar_postfix));
 			
 			// Purposely break 'undo' of sub-state machine pasting as that leaves dead sub-assets inside the controller
 			MethodInfo pastetostatemachine_target = typeof(Unsupported).GetMethod("PasteToStateMachineFromPasteboard", BindingFlags.Static | BindingFlags.Public);//AccessTools.Method(typeof(Unsupported), "PasteToStateMachineFromPasteboard");
@@ -91,6 +97,25 @@ namespace DJL
 		{
 			Debug.Log("Yeeet: "+Undo.GetCurrentGroupName());
 			Undo.ClearUndo(sm);
+		}
+
+		// Controller asset pinging/selection via bottom bar
+		public static void DoGraphBottomBar_postfix(object __instance, Rect nameRect)
+		{
+			UnityEngine.Object ctrl = (UnityEngine.Object)AnimatorControllerGetter.Invoke(__instance, null);
+			if (ctrl != (UnityEngine.Object)null)
+			{
+				EditorGUIUtility.AddCursorRect(nameRect, MouseCursor.Link); // "I'm clickable!"
+				
+				Event current = Event.current;
+				if (((current.type == EventType.MouseDown) && (current.button == 0)) && nameRect.Contains(current.mousePosition))
+				{
+					EditorGUIUtility.PingObject(ctrl);
+					if (current.clickCount == 2) // Adhere to the 'select only on double click' convention
+						Selection.activeObject = ctrl;
+					current.Use();
+				}
+			}
 		}
 
 		// Layer copy-pasting
