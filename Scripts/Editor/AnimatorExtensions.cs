@@ -50,6 +50,7 @@ namespace DJL
 		{
 			var harmonyInstance = new Harmony("djl.animatorextensions");
 
+			// --- Layer and parameter lists --- //
 			// Workaround for layer list scroll reset
 			MethodInfo resetui_target = AccessTools.Method(LayerControllerViewType, "ResetUI");
 			MethodInfo resetui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "ResetUI_Prefix");
@@ -70,32 +71,45 @@ namespace DJL
 			MethodInfo layercontrollerongui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "LayerController_OnGUI_Prefix");
 			harmonyInstance.Patch(layercontrollerongui_target, prefix:new HarmonyMethod(layercontrollerongui_prefix));
 
+
+			// --- Main graph --- //
 			// Click bottom bar to ping the actual controller asset
 			MethodInfo dographbottombar_target = AccessTools.Method(AnimatorWindowType, "DoGraphBottomBar");
 			MethodInfo dographbottombar_postfix = AccessTools.Method(typeof(AnimatorExtensions), "DoGraphBottomBar_postfix");
 			harmonyInstance.Patch(dographbottombar_target, postfix:new HarmonyMethod(dographbottombar_postfix));
 
-			// State Graph motion preview and rename
+			// State info labels and rename trigger
 			MethodInfo statenode_nodeui_target = AccessTools.Method(AccessTools.TypeByName("UnityEditor.Graphs.AnimationStateMachine.StateNode"), "NodeUI");
 			MethodInfo nodeui_postfix = AccessTools.Method(typeof(AnimatorExtensions), "NodeUI_postfix");
 			harmonyInstance.Patch(statenode_nodeui_target, postfix:new HarmonyMethod(nodeui_postfix));
 			MethodInfo statemachinenode_nodeui_target = AccessTools.Method(AccessTools.TypeByName("UnityEditor.Graphs.AnimationStateMachine.StateMachineNode"), "NodeUI");
-			harmonyInstance.Patch(statemachinenode_nodeui_target, postfix: new HarmonyMethod(nodeui_postfix));
+			harmonyInstance.Patch(statemachinenode_nodeui_target, postfix:new HarmonyMethod(nodeui_postfix));
 
+
+			// --- Extras --- //
 			// Purposely break 'undo' of sub-state machine pasting as that leaves dead sub-assets inside the controller
 			MethodInfo pastetostatemachine_target = typeof(Unsupported).GetMethod("PasteToStateMachineFromPasteboard", BindingFlags.Static | BindingFlags.Public);//AccessTools.Method(typeof(Unsupported), "PasteToStateMachineFromPasteboard");
 			MethodInfo pastetostatemachine_postfix = AccessTools.Method(typeof(AnimatorExtensions), "PasteToStateMachineFromPasteboard_Postfix");
 			harmonyInstance.Patch(pastetostatemachine_target, postfix:new HarmonyMethod(pastetostatemachine_postfix));
 
+			// Prevent transition condition parameter change from altering the condition function
+			Type AnimatorTransitionInspectorBaseType = AccessTools.TypeByName("UnityEditor.Graphs.AnimationStateMachine.AnimatorTransitionInspectorBase");
+			MethodInfo drawconditionselement_target = AccessTools.Method(AnimatorTransitionInspectorBaseType, "DrawConditionsElement");
+			MethodInfo drawconditionselement_prefix = AccessTools.Method(typeof(AnimatorExtensions), "DrawConditionsElement_Prefix");
+			MethodInfo drawconditionselement_postfix = AccessTools.Method(typeof(AnimatorExtensions), "DrawConditionsElement_Postfix");
+			harmonyInstance.Patch(drawconditionselement_target, prefix:new HarmonyMethod(drawconditionselement_prefix), postfix:new HarmonyMethod(drawconditionselement_postfix));
+
 			// Preferences through window menu
 			MethodInfo additemstomenu_target = AccessTools.Method(AnimatorWindowType, "AddItemsToMenu");
 			MethodInfo additemstomenu_postfix = AccessTools.Method(typeof(AnimatorExtensions), "AddItemsToMenu_Postfix");
 			harmonyInstance.Patch(additemstomenu_target, postfix:new HarmonyMethod(additemstomenu_postfix));
+
 			// Load preferences
 			ShowStateExtrasLabel = EditorPrefs.GetBool("AnimatorExtensions.ShowStateExtrasLabel", true);
 			ShowStateMotionLabel = EditorPrefs.GetBool("AnimatorExtensions.ShowStateMotionLabel", true);
 		}
 
+		#region ExtraStuff
 		// Toggle features through the window menu
 		public static void AddItemsToMenu_Postfix(object __instance, GenericMenu menu)
 		{
@@ -150,6 +164,80 @@ namespace DJL
 			Undo.ClearUndo(sm);
 		}
 
+		// Prevent transition condition parameter change from altering the condition function
+		private static int ConditionIndex;
+		private static int ConditionMode_pre;
+		private static string ConditionParam_pre;
+		private static AnimatorControllerParameterType ConditionParamType_pre;
+		public static void DrawConditionsElement_Prefix(object __instance, Rect rect, int index, bool selected, bool focused)
+		{
+			ConditionIndex = index;
+			SerializedProperty conditions = (SerializedProperty)Traverse.Create(__instance).Field("m_Conditions").GetValue();
+			SerializedProperty arrayElementAtIndex = conditions.GetArrayElementAtIndex(index);
+			ConditionMode_pre = arrayElementAtIndex.FindPropertyRelative("m_ConditionMode").intValue;
+			ConditionParam_pre = arrayElementAtIndex.FindPropertyRelative("m_ConditionEvent").stringValue;
+
+			AnimatorController ctrl = Traverse.Create(__instance).Field("m_Controller").GetValue() as AnimatorController;
+			if (ctrl)
+			{
+				// Unity, why make IndexOfParameter(name) internal -_-
+				foreach (var param in ctrl.parameters)
+				{
+					if (param.name.Equals(ConditionParam_pre))
+					{
+						ConditionParamType_pre = param.type;
+						break;
+					}
+				}
+			}
+		}
+		public static void DrawConditionsElement_Postfix(object __instance, Rect rect, int index, bool selected, bool focused)
+		{
+			if (ConditionIndex == index)
+			{
+				SerializedProperty conditions = (SerializedProperty)Traverse.Create(__instance).Field("m_Conditions").GetValue();
+				SerializedProperty arrayElementAtIndex = conditions.GetArrayElementAtIndex(index);
+				SerializedProperty m_ConditionMode = arrayElementAtIndex.FindPropertyRelative("m_ConditionMode");
+				string conditionparam_post = arrayElementAtIndex.FindPropertyRelative("m_ConditionEvent").stringValue;
+
+				if (!conditionparam_post.Equals(ConditionParam_pre) && (m_ConditionMode.intValue != ConditionMode_pre))
+				{
+					// Parameter and condition changed, restore condition if parameter type is same
+					AnimatorController ctrl = Traverse.Create(__instance).Field("m_Controller").GetValue() as AnimatorController;
+					if (ctrl)
+					{
+						// Unity, why make IndexOfParameter(name) internal -_-
+						foreach (var param in ctrl.parameters)
+						{
+							if (param.name.Equals(conditionparam_post))
+							{
+								// same type or float->int, fully compatible
+								if ((param.type == ConditionParamType_pre)
+								    || ((ConditionParamType_pre == AnimatorControllerParameterType.Float) && (param.type == AnimatorControllerParameterType.Int)))
+								{
+									m_ConditionMode.intValue = ConditionMode_pre;
+									Debug.Log("Restored transition condition mode");
+								}
+								// int->float has restrictions
+								else if ((ConditionParamType_pre == AnimatorControllerParameterType.Int) && (param.type == AnimatorControllerParameterType.Float))
+								{
+									AnimatorConditionMode premode = (AnimatorConditionMode)ConditionMode_pre;
+									if ((premode != AnimatorConditionMode.Equals) && (premode != AnimatorConditionMode.NotEqual))
+									{
+										m_ConditionMode.intValue = ConditionMode_pre;
+										Debug.Log("Restored transition condition mode 2");
+									}
+								}
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+		#endregion ExtraStuff
+
+		#region GraphStuff
 		// Controller asset pinging/selection via bottom bar
 		public static void DoGraphBottomBar_postfix(object __instance, Rect nameRect)
 		{
@@ -197,15 +285,15 @@ namespace DJL
 				{
 					if (astate.behaviours != null)
 						if (astate.behaviours.Length > 0)
-							extralabel += "	 B";
+							extralabel += "  B";
 					if (astate.writeDefaultValues)
-						extralabel += "	 WD";
+						extralabel += "  WD";
 				}
 				else
 				{
 					if (asm.behaviours != null)
 						if (asm.behaviours.Length > 0)
-							extralabel += "	 B";
+							extralabel += "  B";
 				}
 				Rect extralabelrect = new Rect(rect.x, rect.y - 30, rect.width, 20);
 				EditorGUI.LabelField(extralabelrect, extralabel, StateExtrasStyle);
@@ -228,7 +316,9 @@ namespace DJL
 				Debug.Log("TODO: Rename");
 			}
 		}
+		#endregion Graphstuff
 
+		#region LayerStuff
 		// Layer copy-pasting
 		private static AnimatorControllerLayer _layerClipboard = null;
 		private static AnimatorController _controllerClipboard = null;
@@ -487,6 +577,7 @@ namespace DJL
 			foreach (var csm in sm.stateMachines)
 				GatherSmParams(csm.stateMachine, ref srcparams, ref queuedparams);
 		}
+		#endregion Layerstuff
 	}
 }
 #endif

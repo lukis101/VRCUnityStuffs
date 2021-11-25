@@ -6,10 +6,16 @@ Some [Harmony](https://github.com/pardeike/Harmony) -based patches to Unitys Ani
 * F2 keyboard shortcut to rename selected layer
 * Instead of the annoying list scrollbar reset, get new or edited layer in view
 * Similarly scroll to bottom when adding a new parameter
+* Prevent transition condition mode/function resetting when swapping parameter
 * Highlight/select animator controller by single/double-clicking its path in bottom bar
+* Show extra labels on animation states, both toggleable via window menu:
+  * Animation clip or BlendTree name
+  * `B` if has StateBehaviors
+  * `WD` if has Write-Defaults enabled
 * Disable undo of "Paste Sub-Sate Machine" action as it leaves dangling sub-assets.  
 Manually delete pasted layers or sub-state machines to correctly dispose of majority _(but still not all)_ of sub-assets!
 
+![Animator Extensions context menu](.img/AnimatorExtensions_Labels.png)
 ![Animator Extensions context menu](.img/AnimatorExtensions_Context.png)
 
 ## Material Cleaner
