@@ -2,9 +2,11 @@
 // Copyright (c) 2021 Dj Lukis.LT
 // MIT license (see LICENSE in https://github.com/lukis101/VRCUnityStuffs)
 
-// Known issue: Unsupported.PasteToStateMachineFromPasteboard copies some parameters, but does not copy their default values
-// It also does not have proper undo handling causing dangling sub-assets left in the controller
-// TODO: add undo callback handler to delete sub-state machines properly
+// Known issues:
+// Unsupported.PasteToStateMachineFromPasteboard copies some parameters, but does not copy their default values
+//	 It also does not have proper undo handling causing dangling sub-assets left in the controller
+//	 TODO: add undo callback handler to delete sub-state machines properly
+// State node motion label overlaps progress bar in "Live Link" mode
 
 #if UNITY_EDITOR
 using System;
@@ -21,6 +23,14 @@ namespace DJL
 	[InitializeOnLoad]
 	class AnimatorExtensions
 	{
+		public static int Version_major = 0;
+		public static int Version_minor = 1;
+
+		// Preferences
+		private static bool ShowStateMotionLabel = true;
+		private static bool ShowStateExtrasLabel = true;
+
+		// Cache
 		private static readonly Type AnimatorWindowType = AccessTools.TypeByName("UnityEditor.Graphs.AnimatorControllerTool");
 		private static readonly MethodInfo AnimatorControllerGetter = AccessTools.PropertyGetter(AnimatorWindowType, "animatorController");
 		private static readonly Type LayerControllerViewType = AccessTools.TypeByName("UnityEditor.Graphs.LayerControllerView");
@@ -31,23 +41,26 @@ namespace DJL
 		private static readonly MethodInfo GetElementYOffsetMethod = AccessTools.Method(typeof(ReorderableList), "GetElementYOffset", new Type[]{typeof(int)});
 		private static readonly FieldInfo LayerScrollField = AccessTools.Field(LayerControllerViewType, "m_LayerScroll");
 		private static readonly FieldInfo LayerListField = AccessTools.Field(LayerControllerViewType, "m_LayerList");
+		private static GUIStyle StateMotionStyle = null;
+		private static GUIStyle StateExtrasStyle = null;
+
 		private static bool _refocusSelectedLayer = false;
 
 		static AnimatorExtensions()
 		{
 			var harmonyInstance = new Harmony("djl.animatorextensions");
-		
+
 			// Workaround for layer list scroll reset
 			MethodInfo resetui_target = AccessTools.Method(LayerControllerViewType, "ResetUI");
 			MethodInfo resetui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "ResetUI_Prefix");
 			MethodInfo resetui_postfix = AccessTools.Method(typeof(AnimatorExtensions), "ResetUI_Postfix");
 			harmonyInstance.Patch(resetui_target, prefix:new HarmonyMethod(resetui_prefix), postfix:new HarmonyMethod(resetui_postfix));
-			
+
 			// Scroll to parameter list bottom when adding a new one to see the rename field
 			MethodInfo addparametermenu_target = AccessTools.Method(ParameterControllerViewType, "AddParameterMenu");
 			MethodInfo addparametermenu_postfix = AccessTools.Method(typeof(AnimatorExtensions), "AddParameterMenu_Postfix");
 			harmonyInstance.Patch(addparametermenu_target, postfix:new HarmonyMethod(addparametermenu_postfix));
-			
+
 			// Add extra options for layer list context menu
 			MethodInfo ondrawlayer_target = AccessTools.Method(LayerControllerViewType, "OnDrawLayer");
 			MethodInfo ondrawlayer_prefix = AccessTools.Method(typeof(AnimatorExtensions), "OnDrawLayer_Prefix");
@@ -56,16 +69,54 @@ namespace DJL
 			MethodInfo layercontrollerongui_target = AccessTools.Method(LayerControllerViewType, "OnGUI");
 			MethodInfo layercontrollerongui_prefix = AccessTools.Method(typeof(AnimatorExtensions), "LayerController_OnGUI_Prefix");
 			harmonyInstance.Patch(layercontrollerongui_target, prefix:new HarmonyMethod(layercontrollerongui_prefix));
-			
+
 			// Click bottom bar to ping the actual controller asset
 			MethodInfo dographbottombar_target = AccessTools.Method(AnimatorWindowType, "DoGraphBottomBar");
 			MethodInfo dographbottombar_postfix = AccessTools.Method(typeof(AnimatorExtensions), "DoGraphBottomBar_postfix");
 			harmonyInstance.Patch(dographbottombar_target, postfix:new HarmonyMethod(dographbottombar_postfix));
-			
+
+			// State Graph motion preview and rename
+			MethodInfo statenode_nodeui_target = AccessTools.Method(AccessTools.TypeByName("UnityEditor.Graphs.AnimationStateMachine.StateNode"), "NodeUI");
+			MethodInfo nodeui_postfix = AccessTools.Method(typeof(AnimatorExtensions), "NodeUI_postfix");
+			harmonyInstance.Patch(statenode_nodeui_target, postfix:new HarmonyMethod(nodeui_postfix));
+			MethodInfo statemachinenode_nodeui_target = AccessTools.Method(AccessTools.TypeByName("UnityEditor.Graphs.AnimationStateMachine.StateMachineNode"), "NodeUI");
+			harmonyInstance.Patch(statemachinenode_nodeui_target, postfix: new HarmonyMethod(nodeui_postfix));
+
 			// Purposely break 'undo' of sub-state machine pasting as that leaves dead sub-assets inside the controller
 			MethodInfo pastetostatemachine_target = typeof(Unsupported).GetMethod("PasteToStateMachineFromPasteboard", BindingFlags.Static | BindingFlags.Public);//AccessTools.Method(typeof(Unsupported), "PasteToStateMachineFromPasteboard");
-			MethodInfo pastetostatemachine_postfix =  AccessTools.Method(typeof(AnimatorExtensions), "PasteToStateMachineFromPasteboard_Postfix");
+			MethodInfo pastetostatemachine_postfix = AccessTools.Method(typeof(AnimatorExtensions), "PasteToStateMachineFromPasteboard_Postfix");
 			harmonyInstance.Patch(pastetostatemachine_target, postfix:new HarmonyMethod(pastetostatemachine_postfix));
+
+			// Preferences through window menu
+			MethodInfo additemstomenu_target = AccessTools.Method(AnimatorWindowType, "AddItemsToMenu");
+			MethodInfo additemstomenu_postfix = AccessTools.Method(typeof(AnimatorExtensions), "AddItemsToMenu_Postfix");
+			harmonyInstance.Patch(additemstomenu_target, postfix:new HarmonyMethod(additemstomenu_postfix));
+			// Load preferences
+			ShowStateExtrasLabel = EditorPrefs.GetBool("AnimatorExtensions.ShowStateExtrasLabel", true);
+			ShowStateMotionLabel = EditorPrefs.GetBool("AnimatorExtensions.ShowStateMotionLabel", true);
+		}
+
+		// Toggle features through the window menu
+		public static void AddItemsToMenu_Postfix(object __instance, GenericMenu menu)
+		{
+			menu.AddDisabledItem(new GUIContent("AExtenstions/Version: "+Version_major+"."+Version_minor));
+			menu.AddSeparator("AExtenstions/");
+			menu.AddItem(new GUIContent("AExtenstions/Extra Indicators"), ShowStateExtrasLabel, WindowMenuCallback, "ShowStateExtrasLabel");
+			menu.AddItem(new GUIContent("AExtenstions/Motion name"), ShowStateMotionLabel, WindowMenuCallback, "ShowStateMotionLabel");
+		}
+		private static void WindowMenuCallback(object obj)
+		{
+			String varname = obj as string;
+			if (varname.Equals("ShowStateExtrasLabel"))
+			{
+				ShowStateExtrasLabel = !ShowStateExtrasLabel;
+				EditorPrefs.SetBool("AnimatorExtensions.ShowStateExtrasLabel", ShowStateMotionLabel);
+			}
+			else if (varname.Equals("ShowStateMotionLabel"))
+			{
+				ShowStateMotionLabel = !ShowStateMotionLabel;
+				EditorPrefs.SetBool("AnimatorExtensions.ShowStateMotionLabel", ShowStateMotionLabel);
+			}
 		}
 
 		// Prevent scroll position reset when rearranging or editing layers
@@ -81,13 +132,13 @@ namespace DJL
 				LayerScrollField.SetValue(__instance, _layerScrollCache);
 			_refocusSelectedLayer = true; // Defer focusing to OnGUI to get latest list size and window rect
 		}
-		
+
 		// Set scroll to far down when adding new parameter, gets clamped so good enough
 		public static void AddParameterMenu_Postfix(object __instance, object value)
 		{
 			Traverse.Create(__instance).Field("m_ScrollPosition").SetValue(new Vector2(0, 9001));
 		}
-		
+
 		// Break 'undo' of sub-state machine pasting
 		public static void PasteToStateMachineFromPasteboard_Postfix(
 			AnimatorStateMachine sm,
@@ -95,7 +146,7 @@ namespace DJL
 			int layerIndex,
 			Vector3 position)
 		{
-			Debug.Log("Yeeet: "+Undo.GetCurrentGroupName());
+			//Debug.Log("Yeeet: "+Undo.GetCurrentGroupName());
 			Undo.ClearUndo(sm);
 		}
 
@@ -106,7 +157,7 @@ namespace DJL
 			if (ctrl != (UnityEngine.Object)null)
 			{
 				EditorGUIUtility.AddCursorRect(nameRect, MouseCursor.Link); // "I'm clickable!"
-				
+
 				Event current = Event.current;
 				if (((current.type == EventType.MouseDown) && (current.button == 0)) && nameRect.Contains(current.mousePosition))
 				{
@@ -115,6 +166,66 @@ namespace DJL
 						Selection.activeObject = ctrl;
 					current.Use();
 				}
+			}
+		}
+
+		// Show motion name and extra details on state graph nodes
+		public static void NodeUI_postfix(object __instance, UnityEditor.Graphs.GraphGUI host)
+		{
+			// Figure out which node type
+			AnimatorState astate = Traverse.Create(__instance).Field("state").GetValue<AnimatorState>();
+			bool hasmotion = astate != null;
+			AnimatorStateMachine asm = Traverse.Create(__instance).Field("stateMachine").GetValue<AnimatorStateMachine>();
+			bool hassm = asm != null;
+
+			// Lazy-init styles because built-in ones not available during static init
+			if (StateMotionStyle == null)
+			{
+				StateExtrasStyle = new GUIStyle(EditorStyles.label);
+				StateExtrasStyle.alignment = TextAnchor.UpperRight;
+				StateExtrasStyle.fontStyle = FontStyle.Bold;
+				StateMotionStyle = new GUIStyle(EditorStyles.label);
+				StateMotionStyle.alignment = TextAnchor.LowerCenter;
+			}
+			Rect rect = GUILayoutUtility.GetLastRect();
+
+			// Tags in corner, similar to what layer editor does
+			if ((hasmotion || hassm) && ShowStateExtrasLabel)
+			{
+				string extralabel = "";
+				if (hasmotion)
+				{
+					if (astate.behaviours != null)
+						if (astate.behaviours.Length > 0)
+							extralabel += "	 B";
+					if (astate.writeDefaultValues)
+						extralabel += "	 WD";
+				}
+				else
+				{
+					if (asm.behaviours != null)
+						if (asm.behaviours.Length > 0)
+							extralabel += "	 B";
+				}
+				Rect extralabelrect = new Rect(rect.x, rect.y - 30, rect.width, 20);
+				EditorGUI.LabelField(extralabelrect, extralabel, StateExtrasStyle);
+			}
+
+			// Name of Motion (btree or animation clip) at bottom
+			// TODO? overlaps progress bar in play mode
+			if (hasmotion && ShowStateMotionLabel)
+			{
+				string motionname = "[None]";
+				if (astate.motion)
+					motionname = "[" + astate.motion.name + "]";
+				Rect motionlabelrect = new Rect(rect.x, rect.y - 10, rect.width, 20);
+				EditorGUI.LabelField(motionlabelrect, motionname, StateMotionStyle);
+			}
+
+			Event current = Event.current;
+			if (current.type == EventType.KeyDown && current.keyCode == KeyCode.F2)
+			{
+				Debug.Log("TODO: Rename");
 			}
 		}
 
@@ -127,7 +238,7 @@ namespace DJL
 			Event current = Event.current;
 			if (((current.type == EventType.MouseUp) && (current.button == 1)) && rect.Contains(current.mousePosition))
 			{
-				Event.current.Use();
+				current.Use();
 				GenericMenu menu = new GenericMenu();
 				menu.AddItem(EditorGUIUtility.TrTextContent("Copy layer", null, (Texture) null), false,
 					new GenericMenu.MenuFunction2(AnimatorExtensions.CopyLayer), __instance);
@@ -148,6 +259,7 @@ namespace DJL
 				menu.ShowAsContext();
 			}
 		}
+
 		private static void CopyLayer(object layerControllerView)
 		{
 			var rlist = (ReorderableList)LayerListField.GetValue(layerControllerView);
@@ -168,14 +280,14 @@ namespace DJL
 			int targetindex = rlist.index + 1;
 			string newname = ctrl.MakeUniqueLayerName(_layerClipboard.name);
 			Undo.FlushUndoRecordObjects();
-			
+
 			// Use unity built-in function to clone state machine
 			ctrl.AddLayer(newname);
 			var layers = ctrl.layers;
 			int pastedlayerindex = layers.Length - 1;
 			var pastedlayer = layers[pastedlayerindex];
 			Unsupported.PasteToStateMachineFromPasteboard(pastedlayer.stateMachine, ctrl, pastedlayerindex, Vector3.zero);
-			
+
 			// Promote from child to main
 			var pastedsm = pastedlayer.stateMachine.stateMachines[0].stateMachine;
 			pastedsm.name = newname;
@@ -205,13 +317,13 @@ namespace DJL
 				var destparams = new Dictionary<string, AnimatorControllerParameter>(ctrl.parameters.Length);
 				foreach (var param in ctrl.parameters)
 					destparams[param.name] = param;
-				
+
 				var srcparams = new Dictionary<string, AnimatorControllerParameter>(_controllerClipboard.parameters.Length);
 				foreach (var param in _controllerClipboard.parameters)
 					srcparams[param.name] = param;
-				
+
 				var queuedparams = new Dictionary<string, AnimatorControllerParameter>(_controllerClipboard.parameters.Length);
-				
+
 				// Recursively loop over all nested state machines
 				GatherSmParams(pastedsm, ref srcparams, ref queuedparams);
 
@@ -228,21 +340,20 @@ namespace DJL
 				}
 				Undo.CollapseUndoOperations(curgroup);
 			}
-			
+
 			EditorUtility.SetDirty(ctrl);
 			AssetDatabase.SaveAssets();
 			AssetDatabase.Refresh();
-			
+
 			// Update list selection
 			Traverse.Create(layerControllerView).Property("selectedLayerIndex").SetValue(targetindex);
 		}
-		
+
 		public static void PasteLayerSettings(object layerControllerView)
 		{
 			var rlist = (ReorderableList)LayerListField.GetValue(layerControllerView);
 			AnimatorController ctrl = Traverse.Create(layerControllerView).Field("m_Host").Property("animatorController").GetValue<AnimatorController>();
 
-			Debug.LogWarning("Copy! "+ctrl.name);
 			var layers = ctrl.layers;
 			var targetlayer = layers[rlist.index];
 			PasteLayerProperties(targetlayer, _layerClipboard);
@@ -258,7 +369,7 @@ namespace DJL
 			dest.syncedLayerAffectsTiming = src.syncedLayerAffectsTiming;
 			dest.syncedLayerIndex = src.syncedLayerIndex;
 		}
-		
+
 		// Keyboard hooks for layer editing
 		public static void LayerController_OnGUI_Prefix(object __instance, Rect rect)
 		{
@@ -318,7 +429,7 @@ namespace DJL
 					LayerScrollField.SetValue(__instance, new Vector2(curscroll.x,offs+height-rect.height));
 			}
 		}
-		
+
 		// Recursive helper functions to gather deeply-nested parameter references
 		private static void GatherBtParams(BlendTree bt,
 			ref Dictionary<string, AnimatorControllerParameter> srcparams,
@@ -328,12 +439,12 @@ namespace DJL
 				queuedparams[bt.blendParameter] = srcparams[bt.blendParameter];
 			if (srcparams.ContainsKey(bt.blendParameterY))
 				queuedparams[bt.blendParameterY] = srcparams[bt.blendParameterY];
-			
+
 			foreach (var cmotion in bt.children)
 			{
 				if (srcparams.ContainsKey(cmotion.directBlendParameter))
 					queuedparams[cmotion.directBlendParameter] = srcparams[cmotion.directBlendParameter];
-				
+
 				// Go deeper to nested BlendTrees
 				var cbt = cmotion.motion as BlendTree;
 				if (!(cbt is null))
@@ -371,7 +482,7 @@ namespace DJL
 			foreach (var cond in transition.conditions)
 				if (srcparams.ContainsKey(cond.parameter))
 					queuedparams[cond.parameter] = srcparams[cond.parameter];
-			
+
 			// Go deeper to child sate machines
 			foreach (var csm in sm.stateMachines)
 				GatherSmParams(csm.stateMachine, ref srcparams, ref queuedparams);
