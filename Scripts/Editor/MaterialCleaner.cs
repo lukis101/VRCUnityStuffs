@@ -4,6 +4,7 @@
 
 using UnityEngine;
 using UnityEditor;
+using System.Collections.Generic;
 
 //namespace CrankshaftEditor.Toolset
 namespace DJL
@@ -34,6 +35,40 @@ namespace DJL
                     RemoveAllUnusedProperties(mat, serObj);
                 }
             }
+        }
+
+        [MenuItem("CONTEXT/ModelImporter/Cleanup material remapping")]
+        public static void CLeanupMaterialRemapping(MenuCommand menuCommand)
+        {
+            ModelImporter mi = menuCommand.context as ModelImporter;
+
+            // The list of materials that are actually used by the model is not exposed,
+            // but can be accessed via SerializedObject interface
+            var usedmats = new SerializedObject(mi).FindProperty("m_Materials");
+
+            // Cache the actually-used name list
+            List<string> usednames = new List<string>(usedmats.arraySize);
+            for (int i = 0; i < usedmats.arraySize; i++)
+            {
+                // SourceAssetIdentifier is struct so need to use 'FindPropertyRelative' instead of 'objectReferenceValue'
+                SerializedProperty usedmat = usedmats.GetArrayElementAtIndex(i).FindPropertyRelative("name");
+                usednames.Add(usedmat.stringValue);
+            }
+
+            var remaps = mi.GetExternalObjectMap();
+            int count = 0;
+            foreach(var kv in remaps)
+            {
+                if (kv.Key.type == typeof(UnityEngine.Material))
+                {
+                    if (!usednames.Contains(kv.Key.name))
+                    {
+                        mi.RemoveRemap(kv.Key);
+                        count++;
+                    }
+                }
+            }
+            Debug.Log("Removed " + count + " unused material remaps");
         }
 
         protected virtual void OnEnable()
