@@ -1,4 +1,5 @@
 # Editor tools
+**NOTE:** these must be placed inside a folder named `Editor` to work!
 
 ## Animator Extensions
 Some [Harmony](https://github.com/pardeike/Harmony) -based patches to Unitys Animator window:  
